@@ -1,0 +1,229 @@
+# Building MIME messages: parts in, RFC 5322 out.
+#
+# A message is a plain map that accumulates parts, so the builders compose with
+# `|>` and nothing is mutated in place:
+#
+#   message({ from, to, subject }) |> text("hi") |> attach("a.pdf", data)
+#
+# The structure is chosen for the caller, not the wire: one text part renders
+# as a plain single-part message, and only the shapes that genuinely need a
+# multipart get one.
+
+import std.encoding
+import std.hash
+import std.string as str
+import "./types.ecko"
+
+# --- header hygiene ----------------------------------------------------------
+
+## Strip CR and LF from a header value. This is the email equivalent of HTTP
+## response splitting: a newline inside a Subject or a filename would end that
+## header and start an attacker-chosen one, so a `Bcc:` smuggled into a subject
+## becomes a real recipient. Folding would also be valid per RFC 5322, but
+## stripping keeps the value on one line and cannot be misparsed.
+export fn header_safe(value) {
+    replace(replace(string(value), "\r", ""), "\n", "")
+}
+
+## Normalize any mix of line endings to the CRLF that RFC 5322 requires.
+export fn crlf(text_body) {
+    replace(replace(replace(string(text_body), "\r\n", "\n"), "\r", "\n"), "\n", "\r\n")
+}
+
+# --- construction ------------------------------------------------------------
+
+## Start a message. `spec` carries the envelope: { from, to, subject, date?,
+## headers? }, where `to` may be a string or a list of addresses. Parts are
+## added with `text`, `html` and `attach`.
+export fn message(spec) {
+    {
+        from: header_safe(get(spec, "from")),
+        to: normalize_to(get(spec, "to")),
+        subject: header_safe(opt(spec, "subject", "")),
+        date: get(spec, "date"),
+        headers: opt(spec, "headers", {}),
+        parts: [],
+    }
+}
+
+## `to` accepts one address or a list; both render as a comma-separated header.
+export fn normalize_to(to) {
+    addresses = if type_of(to) == "list" { to } else { [to] }
+    join(map(addresses, fn(a) header_safe(a)), ", ")
+}
+
+## Add a text/plain part.
+export fn text(msg, body) {
+    add_part(
+        msg,
+        {
+            kind: "text",
+            content_type: "text/plain; charset=utf-8",
+            encoding: "8bit",
+            body: crlf(body),
+            filename: null,
+        },
+    )
+}
+
+## Add a text/html part. A message carrying both text and html renders as
+## multipart/alternative, in the order added, so put the plain text first: a
+## reader picks the last part it understands.
+export fn html(msg, body) {
+    add_part(
+        msg,
+        {
+            kind: "html",
+            content_type: "text/html; charset=utf-8",
+            encoding: "8bit",
+            body: crlf(body),
+            filename: null,
+        },
+    )
+}
+
+## A filename as it appears inside `filename="..."`. Stripping CR and LF stops
+## a new header line; escaping backslash and quote stops the value ending its
+## own quoted string, which would put attacker text where a parameter goes.
+export fn quoted_filename(name) {
+    escaped = replace(replace(header_safe(name), "\\", "\\\\"), "\"", "\\\"")
+    "\"" + escaped + "\""
+}
+
+## Attach a file. The media type is inferred from the filename's extension,
+## falling back to application/octet-stream. `data` may be bytes or a string.
+export fn attach(msg, filename, data) {
+    attach_as(msg, filename, data, types.type_for(filename))
+}
+
+## `attach` with the media type given explicitly, for content whose extension
+## does not describe it.
+export fn attach_as(msg, filename, data, content_type) {
+    raw = if type_of(data) == "bytes" { data } else { bytes(string(data)) }
+    add_part(
+        msg,
+        {
+            kind: "attachment",
+            content_type: header_safe(content_type),
+            encoding: "base64",
+            body: wrap76(encoding.base64_encode(raw)),
+            filename: quoted_filename(filename),
+        },
+    )
+}
+
+## Append a prepared part. Exposed for parts this package does not model, such
+## as an inline image with its own Content-ID.
+export fn add_part(msg, part) {
+    insert(msg, "parts", push(msg.parts, part))
+}
+
+# --- encoding ----------------------------------------------------------------
+
+## Wrap a base64 payload to 76-column lines. RFC 2045 caps an encoded line at
+## 76 characters, and RFC 5322 caps any line at 998 octets, so an unwrapped
+## attachment is not merely untidy: some servers refuse it.
+export fn wrap76(encoded) {
+    join(map(chunk(chars(encoded), 76), fn(line) join(line, "")), "\r\n")
+}
+
+# --- boundaries --------------------------------------------------------------
+
+## The multipart delimiter for `msg`, derived from a hash of its parts.
+##
+## Deriving it rather than randomising it buys two things. It cannot collide
+## with the content, because content that contained the boundary would have
+## hashed differently. And the same message renders byte-identically every
+## time, which is what lets the tests assert on exact output and what makes a
+## rendered message diffable.
+export fn boundary_of(msg) {
+    material = join(map(msg.parts, fn(p) p.content_type + "\u{1}" + p.body), "\u{2}")
+    "=_ecko_" + take_str(hash.sha256(material), 32)
+}
+
+## The first `n` characters of `s`.
+export fn take_str(s, n) {
+    join(take(chars(s), n), "")
+}
+
+# --- rendering ---------------------------------------------------------------
+
+## The multipart subtype for this set of parts, or null when the message is a
+## single part and needs no multipart wrapper at all.
+export fn subtype_of(msg) {
+    if len(msg.parts) < 2 { return null }
+    if any(msg.parts, fn(p) p.kind == "attachment") { return "mixed" }
+    "alternative"
+}
+
+## Render to the map `smtp.send` accepts: { from, to, subject, headers, body }.
+## The MIME headers land in `headers`, so the transport does not have to know
+## anything about multiparts.
+##
+## Throws `{ kind: "mime" }` for a message with no parts - an empty body is
+## almost always a caller bug rather than an intent.
+export fn render(msg) {
+    if len(msg.parts) == 0 {
+        error({ kind: "mime", message: "message has no parts: add text(), html() or attach()" })
+    }
+    subtype = subtype_of(msg)
+    built = if is_null(subtype) { render_single(msg) } else { render_multipart(msg, subtype) }
+    mut headers = {}
+    for (k, v) in msg.headers {
+        headers = insert(headers, header_safe(k), header_safe(v))
+    }
+    headers = insert(headers, "MIME-Version", "1.0")
+    headers = insert(headers, "Content-Type", built.content_type)
+    headers = insert(headers, "Content-Transfer-Encoding", built.encoding)
+    out = { from: msg.from, to: msg.to, subject: msg.subject, headers: headers, body: built.body }
+    if is_null(msg.date) { return out }
+    insert(out, "date", header_safe(msg.date))
+}
+
+## One part: its own headers become the message's, and its body is the body.
+export fn render_single(msg) {
+    part = first(msg.parts)
+    { content_type: part.content_type, encoding: part.encoding, body: part.body }
+}
+
+## Several parts: each gets its own header block, separated by the boundary and
+## closed by the terminating `--boundary--`.
+export fn render_multipart(msg, subtype) {
+    boundary = boundary_of(msg)
+    mut chunks = []
+    for part in msg.parts {
+        mut lines = ["--" + boundary, "Content-Type: " + part.content_type]
+        lines = push(lines, "Content-Transfer-Encoding: " + part.encoding)
+        unless is_null(part.filename) {
+            lines = push(lines, "Content-Disposition: attachment; filename=" + part.filename)
+        }
+        chunks = push(chunks, join(lines, "\r\n") + "\r\n\r\n" + part.body)
+    }
+    body = join(chunks, "\r\n") + "\r\n--" + boundary + "--\r\n"
+    {
+        content_type: "multipart/" + subtype + "; boundary=\"" + boundary + "\"",
+        encoding: "8bit",
+        body: body,
+    }
+}
+
+## The whole message as RFC 5322 text, headers and all. `render` is what you
+## hand to a transport; this is for writing a .eml, a fixture, or a test.
+export fn to_string(msg) {
+    out = render(msg)
+    mut lines = ["From: " + out.from, "To: " + out.to, "Subject: " + out.subject]
+    date = get(out, "date")
+    unless is_null(date) { lines = push(lines, "Date: " + date) }
+    # Sorted so the output is stable: Ecko maps are unordered.
+    for name in sort(keys(out.headers)) {
+        lines = push(lines, name + ": " + get(out.headers, name))
+    }
+    join(lines, "\r\n") + "\r\n\r\n" + out.body
+}
+
+## `get` with a default, for optional spec fields.
+export fn opt(m, k, fallback) {
+    found = get(m, k)
+    if is_null(found) { return fallback }
+    found
+}

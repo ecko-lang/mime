@@ -1,0 +1,10 @@
+{
+  "module": "github.com/ecko-lang/mime",
+  "version": "0.9.5",
+  "entrypoint": "main.ecko",
+  "description": "Build MIME messages (multipart, attachments, RFC 5322) and look up media types by file extension. Pure - no capabilities.",
+  "author": "Sean Nieuwoudt <sean@underwulf.com>",
+  "license": "MIT",
+  "capabilities": [],
+  "dependencies": {}
+}

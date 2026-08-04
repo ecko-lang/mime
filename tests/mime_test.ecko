@@ -1,0 +1,221 @@
+# Tests for the mime package - offline, deterministic (no ai/fs/net).
+#
+# Determinism matters more than usual here: a MIME multipart normally carries a
+# random boundary, which would make every rendered message differ run to run.
+# This package derives the boundary from a hash of the parts instead, so the
+# same message always renders identically and these can assert on exact bytes.
+import std.test
+import "../main.ecko"
+m = main
+
+# --- local helpers -----------------------------------------------------------
+
+fn repeat_str(s, n) {
+    mut out = ""
+    for _ in 0..n {
+        out = out + s
+    }
+    out
+}
+
+fn count_of(haystack, needle) {
+    len(split(haystack, needle)) - 1
+}
+
+## The header lines of a rendered message: everything before the blank line.
+fn header_lines(raw) {
+    split(first(split(raw, "\r\n\r\n")), "\r\n")
+}
+
+# --- mimetypes ---------------------------------------------------------------
+
+test.case("type_for maps common extensions", fn() {
+    test.eq(m.type_for("photo.png"), "image/png")
+    test.eq(m.type_for("report.pdf"), "application/pdf")
+    test.eq(m.type_for("notes.txt"), "text/plain")
+    test.eq(m.type_for("page.html"), "text/html")
+    test.eq(m.type_for("data.json"), "application/json")
+    test.eq(m.type_for("archive.tar.gz"), "application/gzip")
+})
+
+test.case("type_for is case-insensitive and handles paths and multiple dots", fn() {
+    test.eq(m.type_for("PHOTO.PNG"), "image/png")
+    test.eq(m.type_for("/var/www/assets/logo.SVG"), "image/svg+xml")
+    test.eq(m.type_for("my.backup.2026.json"), "application/json")
+})
+
+test.case("type_for falls back to octet-stream for unknown or absent extensions", fn() {
+    test.eq(m.type_for("mystery.qqq"), "application/octet-stream")
+    test.eq(m.type_for("README"), "application/octet-stream")
+    test.eq(m.type_for(""), "application/octet-stream")
+})
+
+test.case("extension_for reverses the common types", fn() {
+    test.eq(m.extension_for("image/png"), "png")
+    test.eq(m.extension_for("text/plain"), "txt")
+    test.eq(m.extension_for("application/octet-stream"), null)
+})
+
+# --- single-part messages ----------------------------------------------------
+
+test.case("a text-only message stays single-part, with no boundary", fn() {
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" }) |> m.text("hello")
+    out = m.render(msg)
+    test.eq(out.from, "a@x")
+    test.eq(out.to, "b@y")
+    test.eq(out.subject, "hi")
+    test.eq(out.body, "hello")
+    test.eq(get(out.headers, "Content-Type"), "text/plain; charset=utf-8")
+    test.ok(is_null(get(out.headers, "Content-Transfer-Encoding")) == false, "has an encoding")
+})
+
+test.case("an html-only message is single-part text/html", fn() {
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" }) |> m.html("<p>hello</p>")
+    out = m.render(msg)
+    test.eq(out.body, "<p>hello</p>")
+    test.eq(get(out.headers, "Content-Type"), "text/html; charset=utf-8")
+})
+
+# --- multipart ---------------------------------------------------------------
+
+test.case("text plus html becomes multipart/alternative", fn() {
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" })
+        |> m.text("hello")
+        |> m.html("<p>hello</p>")
+    out = m.render(msg)
+    ct = get(out.headers, "Content-Type")
+    test.ok(starts_with(ct, "multipart/alternative; boundary=\""), "alternative: {ct}")
+    test.ok(contains(out.body, "Content-Type: text/plain; charset=utf-8"), "carries the text part")
+    test.ok(contains(out.body, "Content-Type: text/html; charset=utf-8"), "carries the html part")
+})
+
+test.case("adding an attachment makes it multipart/mixed", fn() {
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" })
+        |> m.text("see attached")
+        |> m.attach("report.pdf", bytes("%PDF-1.4 fake"))
+    out = m.render(msg)
+    ct = get(out.headers, "Content-Type")
+    test.ok(starts_with(ct, "multipart/mixed; boundary=\""), "mixed: {ct}")
+    test.ok(
+        contains(out.body, "Content-Type: application/pdf"),
+        "types the attachment by extension",
+    )
+    test.ok(
+        contains(out.body, "Content-Disposition: attachment; filename=\"report.pdf\""),
+        "names the attachment",
+    )
+    test.ok(contains(out.body, "Content-Transfer-Encoding: base64"), "encodes it base64")
+})
+
+test.case("attach_as overrides the inferred content type", fn() {
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" })
+        |> m.text("x")
+        |> m.attach_as("data.bin", bytes("abc"), "application/x-custom")
+    out = m.render(msg)
+    test.ok(contains(out.body, "Content-Type: application/x-custom"), "uses the given type")
+})
+
+test.case("base64 payloads wrap at 76 columns", fn() {
+    # 200 bytes encodes to ~268 base64 chars, so it must wrap.
+    payload = bytes(repeat_str("A", 200))
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" })
+        |> m.text("x")
+        |> m.attach("big.bin", payload)
+    out = m.render(msg)
+    longest = 0
+    for line in split(out.body, "\r\n") {
+        if len(line) > longest { longest = len(line) }
+    }
+    test.ok(longest <= 76, "no line over 76 columns, saw {longest}")
+})
+
+# --- boundaries --------------------------------------------------------------
+
+test.case("the boundary is deterministic for the same content", fn() {
+    build = fn() {
+        m.message({ from: "a@x", to: "b@y", subject: "hi" })
+            |> m.text("hello")
+            |> m.attach("a.txt", bytes("data"))
+    }
+    test.eq(m.render(build()).headers, m.render(build()).headers)
+})
+
+test.case("the boundary never appears inside the content it delimits", fn() {
+    # A body that quotes a plausible boundary must not be able to split the
+    # message: the delimiter is derived from the content, so it cannot collide.
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" })
+        |> m.text("--=_ecko_deadbeef")
+        |> m.attach("a.txt", bytes("data"))
+    out = m.render(msg)
+    boundary = m.boundary_of(msg)
+    test.ok(contains(out.body, "--" + boundary), "the real delimiter is present")
+    test.eq(count_of(out.body, "--" + boundary), 3)
+})
+
+# --- RFC 5322 output ---------------------------------------------------------
+
+test.case("to_string emits CRLF headers, a blank line, then the body", fn() {
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" }) |> m.text("hello")
+    raw = m.to_string(msg)
+    test.ok(contains(raw, "From: a@x\r\n"), "From header")
+    test.ok(contains(raw, "To: b@y\r\n"), "To header")
+    test.ok(contains(raw, "Subject: hi\r\n"), "Subject header")
+    test.ok(contains(raw, "MIME-Version: 1.0\r\n"), "MIME-Version")
+    test.ok(contains(raw, "\r\n\r\nhello"), "blank line before the body")
+})
+
+test.case("multiple recipients join with commas", fn() {
+    msg = m.message({ from: "a@x", to: ["b@y", "c@z"], subject: "hi" }) |> m.text("hello")
+    test.eq(m.render(msg).to, "b@y, c@z")
+})
+
+test.case("bare newlines in a body become CRLF", fn() {
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" }) |> m.text("one\ntwo")
+    test.eq(m.render(msg).body, "one\r\ntwo")
+})
+
+# --- header injection --------------------------------------------------------
+
+test.case("CRLF in a header value cannot inject another header", fn() {
+    # The classic email-header injection: a subject carrying a newline and a
+    # forged Bcc. Folding or stripping it is fine; letting it through is not.
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi\r\nBcc: attacker@evil" })
+        |> m.text("hello")
+    raw = m.to_string(msg)
+    # The forged text may survive *inside* the Subject value - that is safe and
+    # is what stripping the newline does. What must not exist is a new header
+    # line, so assert on the header block rather than on the whole message.
+    injected = filter(header_lines(raw), fn(l) starts_with(l, "Bcc:"))
+    test.eq(injected, [])
+    test.ok(len(header_lines(raw)) == 6, "no extra header line: {header_lines(raw)}")
+})
+
+test.case("CRLF in an attachment filename cannot inject a header", fn() {
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" })
+        |> m.text("x")
+        |> m.attach("evil\r\nContent-Type: text/html", bytes("data"))
+    out = m.render(msg)
+    # As with the subject, the text may survive inside the quoted filename.
+    # What must not happen is a line that *is* a Content-Type header.
+    forged = filter(split(out.body, "\r\n"), fn(l) l == "Content-Type: text/html")
+    test.eq(forged, [])
+})
+
+test.case("a quote in a filename cannot escape the quoted parameter", fn() {
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" })
+        |> m.text("x")
+        |> m.attach("evil\".pdf", bytes("data"))
+    out = m.render(msg)
+    test.ok(
+        contains(out.body, "filename=\"evil\\\".pdf\""),
+        "the quote is escaped, not closing the value:\n{out.body}",
+    )
+})
+
+# --- errors ------------------------------------------------------------------
+
+test.case("rendering a message with no parts is an error", fn() {
+    msg = m.message({ from: "a@x", to: "b@y", subject: "hi" })
+    caught = try { m.render(msg) } catch (e) { get(e, "kind") }
+    test.eq(caught, "mime")
+})

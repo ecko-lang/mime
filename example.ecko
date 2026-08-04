@@ -1,0 +1,67 @@
+# mime - building a real message, end to end.
+#
+# Runs offline and prints the same bytes every time: the multipart boundary is
+# derived from the content rather than randomised, and the SMTP transport is in
+# mock mode, so nothing here touches the network.
+#
+#   ecko example.ecko
+
+import "./main.ecko" as mime
+
+# --- media types -------------------------------------------------------------
+
+print("type_for:")
+for name in ["report.pdf", "photo.PNG", "/srv/static/app.js", "notes", "backup.tar.gz"] {
+    print("  {name} -> {mime.type_for(name)}")
+}
+print("extension_for(image/jpeg) -> {mime.extension_for(\"image/jpeg\")}")
+print("")
+
+# --- a plain message ---------------------------------------------------------
+
+# One part, so no multipart wrapper: the message is just text/plain.
+plain = mime.message({ from: "reports@example.com", to: "ada@example.com", subject: "Daily numbers" })
+    |> mime.text("Everything is green.")
+
+print("--- plain ---")
+print(mime.to_string(plain))
+print("")
+
+# --- text, an HTML alternative, and an attachment -----------------------------
+
+# Plain text first: a reader picks the last part it understands, so the richer
+# alternative should come after the fallback.
+report = bytes("%PDF-1.4\nnot really a pdf, but it attaches the same way\n")
+
+full = mime.message({ from: "Reports <reports@example.com>", to: ["ada@example.com", "grace@example.com"], subject: "Daily numbers", headers: { "X-Report-Run": "2026-08-03" } })
+    |> mime.text("Everything is green. The detail is attached.")
+    |> mime.html("<p>Everything is <strong>green</strong>. The detail is attached.</p>")
+    |> mime.attach("report.pdf", report)
+
+print("--- multipart/mixed ---")
+print(mime.to_string(full))
+print("")
+
+# --- handing it to a transport ------------------------------------------------
+
+# `render` returns exactly the map `smtp.send` takes, so the two compose with
+# no glue. Mock mode returns the bytes it would have sent instead of dialling.
+import "../smtp-client/main.ecko" as smtp
+
+sent = smtp.send({ host: "smtp.example.com", mock: true }, mime.render(full))
+print("--- what smtp would transmit ---")
+print("accepted: {sent.accepted}")
+
+# The point of the exercise: the message carries exactly one Content-Type, and
+# it is the multipart one. Before this, smtp always appended its own
+# text/plain, so a multipart message arrived with two and parsed as neither.
+#
+# Only the header block counts. Each part has its own Content-Type inside the
+# body, which is what a multipart is made of, so scanning the whole message
+# would count those too and prove nothing.
+header_block = split(sent.data, "\r\n\r\n")[0]
+content_types = filter(split(header_block, "\r\n"), fn(l) starts_with(l, "Content-Type:"))
+print("Content-Type headers in the message header block: {len(content_types)}")
+for line in content_types {
+    print("  {line}")
+}

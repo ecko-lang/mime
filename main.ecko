@@ -1,0 +1,26 @@
+# mime - build MIME messages and look up media types, in Ecko.
+#
+# Two jobs that keep turning up together:
+#
+#   - assembling an email with a plain-text body, an HTML alternative and
+#     attachments, as RFC 5322 text a transport can send
+#   - answering "what media type is this filename", for uploads and static
+#     serving
+#
+#   import mime
+#   import smtp
+#
+#   msg = mime.message({ from: "a@x", to: "b@y", subject: "Report" })
+#       |> mime.text("The numbers are attached.")
+#       |> mime.attach("report.pdf", pdf_bytes)
+#
+#   smtp.send(server, mime.render(msg))
+#   mime.type_for("photo.png")             # "image/png"
+#
+# `render` returns exactly the map `smtp.send` expects, so the two compose
+# without either package knowing about the other.
+#
+# Pure computation - no capabilities. Reading a file to attach is the caller's
+# job, and their `fs:read` grant, not this package's.
+export * from "./types.ecko"
+export * from "./message.ecko"

@@ -1,0 +1,184 @@
+# Media-type lookup by file extension.
+#
+# A curated table, not a copy of the IANA registry: it covers what actually
+# turns up as an email attachment or a served static file. Anything unknown
+# gets `application/octet-stream`, which is the correct answer for "bytes of
+# unknown shape" rather than a failure.
+
+import std.string as str
+
+## The extension-to-type table, lowercase extension without the dot. Exposed so
+## a caller can see exactly what is known rather than probing `type_for`.
+##
+## Grouped in source order: text, structured data, documents, images, audio and
+## video, archives, fonts, then everything else. The groups are not marked with
+## comments inside the literal on purpose - `ecko fmt` hoists a comment out of a
+## map literal and then reports the file as unformatted for ever after (core
+## card 34b0992f).
+export fn table() {
+    {
+        txt: "text/plain",
+        md: "text/markdown",
+        csv: "text/csv",
+        html: "text/html",
+        htm: "text/html",
+        css: "text/css",
+        ics: "text/calendar",
+        json: "application/json",
+        xml: "application/xml",
+        yaml: "application/yaml",
+        yml: "application/yaml",
+        toml: "application/toml",
+        js: "text/javascript",
+        pdf: "application/pdf",
+        rtf: "application/rtf",
+        doc: "application/msword",
+        docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        xls: "application/vnd.ms-excel",
+        xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ppt: "application/vnd.ms-powerpoint",
+        pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        odt: "application/vnd.oasis.opendocument.text",
+        epub: "application/epub+zip",
+        png: "image/png",
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        gif: "image/gif",
+        webp: "image/webp",
+        svg: "image/svg+xml",
+        ico: "image/vnd.microsoft.icon",
+        bmp: "image/bmp",
+        tif: "image/tiff",
+        tiff: "image/tiff",
+        avif: "image/avif",
+        heic: "image/heic",
+        mp3: "audio/mpeg",
+        wav: "audio/wav",
+        ogg: "audio/ogg",
+        flac: "audio/flac",
+        m4a: "audio/mp4",
+        mp4: "video/mp4",
+        webm: "video/webm",
+        mov: "video/quicktime",
+        avi: "video/x-msvideo",
+        mkv: "video/x-matroska",
+        zip: "application/zip",
+        gz: "application/gzip",
+        tgz: "application/gzip",
+        bz2: "application/x-bzip2",
+        xz: "application/x-xz",
+        zst: "application/zstd",
+        tar: "application/x-tar",
+        "7z": "application/x-7z-compressed",
+        woff: "font/woff",
+        woff2: "font/woff2",
+        ttf: "font/ttf",
+        otf: "font/otf",
+        wasm: "application/wasm",
+        sh: "application/x-sh",
+        sql: "application/sql",
+        ecko: "text/plain",
+    }
+}
+
+## The fallback for anything the table does not know.
+export fn default_type() {
+    "application/octet-stream"
+}
+
+## The lowercase extension of `path`, without the dot, or "" if it has none.
+## Only the final component is considered, so a dot in a directory name cannot
+## be mistaken for an extension.
+export fn extension_of(path) {
+    name = last(split(path, "/"))
+    parts = split(name, ".")
+    # "README" and ".hidden" both have no extension: the latter splits to
+    # ["", "hidden"], which is a leading dot rather than a suffix.
+    if len(parts) < 2 { return "" }
+    if first(parts) == "" and len(parts) == 2 { return "" }
+    str.lower(last(parts))
+}
+
+## type_for("photo.png") -> "image/png". Case-insensitive, path-aware, and
+## falls back to application/octet-stream for anything unrecognised.
+export fn type_for(path) {
+    ext = extension_of(path)
+    if ext == "" { return default_type() }
+    found = get(table(), ext)
+    if is_null(found) { return default_type() }
+    found
+}
+
+## The extension to use when a type has several. Written out rather than
+## derived by scanning `table()`: several types map from more than one
+## extension (image/jpeg from both "jpg" and "jpeg", text/plain from both "txt"
+## and "ecko"), and Ecko maps are unordered, so a scan would pick a different
+## answer run to run.
+export fn preferred_extensions() {
+    {
+        "text/plain": "txt",
+        "text/markdown": "md",
+        "text/csv": "csv",
+        "text/html": "html",
+        "text/css": "css",
+        "text/calendar": "ics",
+        "text/javascript": "js",
+        "application/json": "json",
+        "application/xml": "xml",
+        "application/yaml": "yaml",
+        "application/toml": "toml",
+        "application/pdf": "pdf",
+        "application/rtf": "rtf",
+        "application/zip": "zip",
+        "application/gzip": "gz",
+        "application/x-bzip2": "bz2",
+        "application/x-xz": "xz",
+        "application/zstd": "zst",
+        "application/x-tar": "tar",
+        "application/x-7z-compressed": "7z",
+        "application/wasm": "wasm",
+        "application/sql": "sql",
+        "application/x-sh": "sh",
+        "application/epub+zip": "epub",
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/gif": "gif",
+        "image/webp": "webp",
+        "image/svg+xml": "svg",
+        "image/bmp": "bmp",
+        "image/tiff": "tif",
+        "image/avif": "avif",
+        "image/heic": "heic",
+        "image/vnd.microsoft.icon": "ico",
+        "audio/mpeg": "mp3",
+        "audio/wav": "wav",
+        "audio/ogg": "ogg",
+        "audio/flac": "flac",
+        "audio/mp4": "m4a",
+        "video/mp4": "mp4",
+        "video/webm": "webm",
+        "video/quicktime": "mov",
+        "video/x-msvideo": "avi",
+        "video/x-matroska": "mkv",
+        "font/woff": "woff",
+        "font/woff2": "woff2",
+        "font/ttf": "ttf",
+        "font/otf": "otf",
+    }
+}
+
+## extension_for("image/png") -> "png", or null when nothing maps to it. Any
+## parameters are ignored, so "text/plain; charset=utf-8" still answers "txt".
+## application/octet-stream deliberately maps to null: it is the fallback for
+## unknown bytes, not a type with a file extension.
+export fn extension_for(content_type) {
+    wanted = str.lower(trim_type(content_type))
+    if wanted == default_type() { return null }
+    get(preferred_extensions(), wanted)
+}
+
+## Strip any parameters from a media type: "text/plain; charset=utf-8" ->
+## "text/plain".
+export fn trim_type(content_type) {
+    str.trim(first(split(content_type, ";")))
+}
