@@ -20,7 +20,9 @@ print("")
 # --- a plain message ---------------------------------------------------------
 
 # One part, so no multipart wrapper: the message is just text/plain.
-plain = mime.message({ from: "reports@example.com", to: "ada@example.com", subject: "Daily numbers" })
+plain = mime.message(
+    { from: "reports@example.com", to: "ada@example.com", subject: "Daily numbers" },
+)
     |> mime.text("Everything is green.")
 
 print("--- plain ---")
@@ -33,7 +35,14 @@ print("")
 # alternative should come after the fallback.
 report = bytes("%PDF-1.4\nnot really a pdf, but it attaches the same way\n")
 
-full = mime.message({ from: "Reports <reports@example.com>", to: ["ada@example.com", "grace@example.com"], subject: "Daily numbers", headers: { "X-Report-Run": "2026-08-03" } })
+full = mime.message(
+    {
+        from: "Reports <reports@example.com>",
+        to: ["ada@example.com", "grace@example.com"],
+        subject: "Daily numbers",
+        headers: { "X-Report-Run": "2026-08-03" },
+    },
+)
     |> mime.text("Everything is green. The detail is attached.")
     |> mime.html("<p>Everything is <strong>green</strong>. The detail is attached.</p>")
     |> mime.attach("report.pdf", report)
