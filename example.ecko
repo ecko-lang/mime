@@ -53,24 +53,19 @@ print("")
 
 # --- handing it to a transport ------------------------------------------------
 
-# `render` returns exactly the map `smtp.send` takes, so the two compose with
-# no glue. Mock mode returns the bytes it would have sent instead of dialling.
-import "../smtp-client/main.ecko" as smtp
+# `render` returns exactly the map an SMTP client's `send` takes - envelope
+# fields, a header map, and the encoded body - so the two compose with no glue.
+# Pass it straight to the `smtp` package.
+wire = mime.render(full)
 
-sent = smtp.send({ host: "smtp.example.com", mock: true }, mime.render(full))
-print("--- what smtp would transmit ---")
-print("accepted: {sent.accepted}")
-
-# The point of the exercise: the message carries exactly one Content-Type, and
-# it is the multipart one. Before this, smtp always appended its own
-# text/plain, so a multipart message arrived with two and parsed as neither.
-#
-# Only the header block counts. Each part has its own Content-Type inside the
-# body, which is what a multipart is made of, so scanning the whole message
-# would count those too and prove nothing.
-header_block = split(sent.data, "\r\n\r\n")[0]
-content_types = filter(split(header_block, "\r\n"), fn(l) starts_with(l, "Content-Type:"))
-print("Content-Type headers in the message header block: {len(content_types)}")
-for line in content_types {
-    print("  {line}")
+print("--- what a transport receives ---")
+for k in sort(keys(wire.headers)) {
+    print("{k}: {wire.headers[k]}")
 }
+
+# The header the transport must not touch: the message carries exactly one
+# Content-Type, and it is the multipart one. A transport that appends its own
+# text/plain leaves a multipart message with two, and it parses as neither - so
+# `render` owns this header and the caller sends what it is given.
+ct = wire.headers["Content-Type"]
+print("Content-Type: {ct}")
