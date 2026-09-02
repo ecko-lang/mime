@@ -5,7 +5,7 @@
 # gets `application/octet-stream`, which is the correct answer for "bytes of
 # unknown shape" rather than a failure.
 
-import std.string as str
+import std.str as str
 
 ## The extension-to-type table, lowercase extension without the dot. Exposed so
 ## a caller can see exactly what is known rather than probing `type_for`.
