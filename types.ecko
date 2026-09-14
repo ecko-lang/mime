@@ -82,14 +82,14 @@ export fn table() {
 }
 
 ## The fallback for anything the table does not know.
-export fn default_type() {
+fn default_type() {
     "application/octet-stream"
 }
 
 ## The lowercase extension of `path`, without the dot, or "" if it has none.
 ## Only the final component is considered, so a dot in a directory name cannot
 ## be mistaken for an extension.
-export fn extension_of(path) {
+fn extension_of(path) {
     name = last(split(path, "/"))
     parts = split(name, ".")
     # "README" and ".hidden" both have no extension: the latter splits to

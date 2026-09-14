@@ -20,12 +20,12 @@ import "./types.ecko"
 ## header and start an attacker-chosen one, so a `Bcc:` smuggled into a subject
 ## becomes a real recipient. Folding would also be valid per RFC 5322, but
 ## stripping keeps the value on one line and cannot be misparsed.
-export fn header_safe(value) {
+fn header_safe(value) {
     replace(replace(string(value), "\r", ""), "\n", "")
 }
 
 ## Normalize any mix of line endings to the CRLF that RFC 5322 requires.
-export fn crlf(text_body) {
+fn crlf(text_body) {
     replace(replace(replace(string(text_body), "\r\n", "\n"), "\r", "\n"), "\n", "\r\n")
 }
 
@@ -46,7 +46,7 @@ export fn message(spec) {
 }
 
 ## `to` accepts one address or a list; both render as a comma-separated header.
-export fn normalize_to(to) {
+fn normalize_to(to) {
     addresses = if type_of(to) == "list" { to } else { [to] }
     join(map(addresses, fn(a) header_safe(a)), ", ")
 }
@@ -84,7 +84,7 @@ export fn html(msg, body) {
 ## A filename as it appears inside `filename="..."`. Stripping CR and LF stops
 ## a new header line; escaping backslash and quote stops the value ending its
 ## own quoted string, which would put attacker text where a parameter goes.
-export fn quoted_filename(name) {
+fn quoted_filename(name) {
     escaped = replace(replace(header_safe(name), "\\", "\\\\"), "\"", "\\\"")
     "\"" + escaped + "\""
 }
@@ -122,7 +122,7 @@ export fn add_part(msg, part) {
 ## Wrap a base64 payload to 76-column lines. RFC 2045 caps an encoded line at
 ## 76 characters, and RFC 5322 caps any line at 998 octets, so an unwrapped
 ## attachment is not merely untidy: some servers refuse it.
-export fn wrap76(encoded) {
+fn wrap76(encoded) {
     join(map(chunk(chars(encoded), 76), fn(line) join(line, "")), "\r\n")
 }
 
@@ -141,7 +141,7 @@ export fn boundary_of(msg) {
 }
 
 ## The first `n` characters of `s`.
-export fn take_str(s, n) {
+fn take_str(s, n) {
     join(take(chars(s), n), "")
 }
 
@@ -180,14 +180,14 @@ export fn render(msg) {
 }
 
 ## One part: its own headers become the message's, and its body is the body.
-export fn render_single(msg) {
+fn render_single(msg) {
     part = first(msg.parts)
     { content_type: part.content_type, encoding: part.encoding, body: part.body }
 }
 
 ## Several parts: each gets its own header block, separated by the boundary and
 ## closed by the terminating `--boundary--`.
-export fn render_multipart(msg, subtype) {
+fn render_multipart(msg, subtype) {
     boundary = boundary_of(msg)
     mut chunks = []
     for part in msg.parts {
@@ -221,7 +221,7 @@ export fn to_string(msg) {
 }
 
 ## `get` with a default, for optional spec fields.
-export fn opt(m, k, fallback) {
+fn opt(m, k, fallback) {
     found = get(m, k)
     if is_null(found) { return fallback }
     found
