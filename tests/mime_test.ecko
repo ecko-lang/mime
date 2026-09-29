@@ -122,7 +122,7 @@ test.case("base64 payloads wrap at 76 columns", fn() {
         |> m.text("x")
         |> m.attach("big.bin", payload)
     out = m.render(msg)
-    longest = 0
+    mut longest = 0
     for line in split(out.body, "\r\n") {
         if len(line) > longest { longest = len(line) }
     }
