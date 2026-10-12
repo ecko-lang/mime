@@ -16,7 +16,7 @@ ecko get github.com/ecko-lang/mime
 ```
 
 `ecko get` vendors the package under `./vendor/github.com/ecko-lang/mime/` and
-pins its checksum in `ecko.lock`.
+pins a file-tree hash in `ecko.sum`.
 
 ```ecko
 import mime
